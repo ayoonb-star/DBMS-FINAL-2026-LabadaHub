@@ -7,6 +7,18 @@ const { authenticate, authorize } = require('../middleware/auth');
 const STATUSES = ['Booked','Received','Washing','Drying',
   'Ironing and Folding','Ready for Claim','Completed','Cancelled'];
 
+// Allowed next statuses for each current status
+const TRANSITIONS = {
+  'Booked': ['Received', 'Cancelled'],
+  'Received': ['Washing', 'Cancelled'],
+  'Washing': ['Drying'],
+  'Drying': ['Ironing and Folding'],
+  'Ironing and Folding': ['Ready for Claim'],
+  'Ready for Claim': ['Completed'],
+  'Completed': [],
+  'Cancelled': []
+};
+
 router.post('/', authenticate, authorize('customer'), async (req, res) => {
   const serviceId = Number(req.body.service_id);
   const slotId = Number(req.body.slot_id);
@@ -37,11 +49,15 @@ router.post('/', authenticate, authorize('customer'), async (req, res) => {
     await conn.beginTransaction();
 
     const [[slot]] = await conn.query(
-      `SELECT max_bookings, TIMESTAMP(slot_date, start_time) AS starts_at
+            `SELECT max_bookings, is_open, TIMESTAMP(slot_date, start_time) AS starts_at
        FROM time_slots WHERE id = ? FOR UPDATE`, [slotId]);
     if (!slot) {
       await conn.rollback();
       return res.status(404).json({ message: 'Time slot not found' });
+    }
+        if (!slot.is_open) {
+      await conn.rollback();
+      return res.status(409).json({ message: 'Time slot is closed' });
     }
     if (new Date(slot.starts_at) <= new Date()) {
       await conn.rollback();
@@ -99,26 +115,89 @@ router.post('/', authenticate, authorize('customer'), async (req, res) => {
   }
 });
 
-router.patch('/:orderNo/status', authenticate, authorize('staff','admin'),
+router.patch('/:orderNo/status', authenticate, authorize('staff', 'admin'),
   async (req, res) => {
-    const { status, actual_weight } = req.body;
+    const { status } = req.body;
+
+    // 1. Input validation (before touching the database)
     if (!STATUSES.includes(status))
       return res.status(400).json({ message: 'Invalid status' });
 
-    const [[order]] = await db.query(
-      'SELECT o.id, s.price FROM orders o JOIN services s ON s.id = o.service_id WHERE o.order_no = ?',
-      [req.params.orderNo]);
-    if (!order) return res.status(404).json({ message: 'Order not found' });
-
-    if (status === 'Received' && actual_weight) {
-      await db.query('UPDATE orders SET actual_weight=?, total_price=? WHERE id=?',
-        [actual_weight, actual_weight * order.price, order.id]);
+    let remarks = null;
+    if (req.body.remarks !== undefined && req.body.remarks !== null && req.body.remarks !== '') {
+      if (typeof req.body.remarks !== 'string' || req.body.remarks.trim().length > 255)
+        return res.status(400).json({ message: 'Remarks must be text of at most 255 characters' });
+      remarks = req.body.remarks.trim();
     }
-    await db.query('UPDATE orders SET status=? WHERE id=?', [status, order.id]);
-    await db.query(
-      'INSERT INTO order_status_history (order_id, status, updated_by) VALUES (?,?,?)',
-      [order.id, status, req.user.id]);
-    res.json({ message: 'Status updated' });
+
+    let actualWeight = null;
+    if (status === 'Received') {
+      actualWeight = Number(req.body.actual_weight);
+      if (!Number.isFinite(actualWeight) || actualWeight <= 0 || actualWeight > 9999.99)
+        return res.status(400).json({
+          message: 'actual_weight is required for Received and must be greater than 0 and at most 9999.99'
+        });
+      if (Math.abs(actualWeight * 100 - Math.round(actualWeight * 100)) > 1e-6)
+        return res.status(400).json({ message: 'actual_weight can have at most 2 decimal places' });
+    }
+
+    const conn = await db.getConnection();
+    try {
+      await conn.beginTransaction();
+
+      // 2. Lock the order so two staff cannot update it at the same time
+      const [[order]] = await conn.query(
+        `SELECT o.id, o.status, s.pricing_type, s.price
+         FROM orders o JOIN services s ON s.id = o.service_id
+         WHERE o.order_no = ? FOR UPDATE`,
+        [req.params.orderNo]);
+      if (!order) {
+        await conn.rollback();
+        return res.status(404).json({ message: 'Order not found' });
+      }
+
+      // 3. Check the transition is allowed
+      const allowed = TRANSITIONS[order.status] || [];
+      if (!allowed.includes(status)) {
+        await conn.rollback();
+        return res.status(409).json({
+          message: `Cannot change status from ${order.status} to ${status}`,
+          allowed_next: allowed
+        });
+      }
+
+      // 4. Update the order (and finalize the price on intake)
+      let totalPrice;
+      if (status === 'Received') {
+        if (order.pricing_type === 'per_item' && !Number.isInteger(actualWeight)) {
+          await conn.rollback();
+          return res.status(400).json({ message: 'Number of items must be a whole number' });
+        }
+        totalPrice = Math.round(Number(order.price) * actualWeight * 100) / 100;
+        await conn.query(
+          'UPDATE orders SET status = ?, actual_weight = ?, total_price = ? WHERE id = ?',
+          [status, actualWeight, totalPrice, order.id]);
+      } else {
+        await conn.query('UPDATE orders SET status = ? WHERE id = ?', [status, order.id]);
+      }
+
+      // 5. Record the change in the history
+      await conn.query(
+        'INSERT INTO order_status_history (order_id, status, updated_by, remarks) VALUES (?,?,?,?)',
+        [order.id, status, req.user.id, remarks]);
+
+      await conn.commit();
+
+      const response = { message: 'Status updated', order_no: req.params.orderNo, status };
+      if (totalPrice !== undefined) response.total_price = totalPrice;
+      res.json(response);
+    } catch (err) {
+      try { await conn.rollback(); } catch (_) {}
+      console.error(err);
+      res.status(500).json({ message: 'Status update failed' });
+    } finally {
+      conn.release();
+    }
   });
 
 router.get('/mine', authenticate, authorize('customer'), async (req, res) => {
