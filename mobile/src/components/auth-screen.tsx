@@ -113,6 +113,17 @@ export function AuthScreen() {
               <ModeButton selected={mode === 'signup'} onPress={() => changeMode('signup')}>Create account</ModeButton>
             </View>
 
+            <View style={styles.guideBox}>
+              <Text style={styles.guideTitle}>How to use LabadaHub</Text>
+              <Text style={styles.guideStep}>1. Choose your account type: Client, Staff, or Admin.</Text>
+              <Text style={styles.guideStep}>
+                2. {mode === 'login'
+                  ? 'Sign in with the email and password for that account.'
+                  : 'Create a Client account, or enter a valid invitation code for Staff or Admin.'}
+              </Text>
+              <Text style={styles.guideStep}>3. Use the available tabs to book laundry, track orders, manage intake, or view store statistics.</Text>
+            </View>
+
             {showingPortalChoices ? (
               <>
                 <Text style={styles.title}>{mode === 'login' ? 'Choose your sign-in portal' : 'Choose account type'}</Text>
@@ -311,6 +322,9 @@ const styles = StyleSheet.create({
   modeButtonSelected: { backgroundColor: '#ffffff', shadowColor: '#132d41', shadowOpacity: 0.08, shadowRadius: 5, shadowOffset: { width: 0, height: 2 }, elevation: 1 },
   modeText: { color: Colors.muted, fontSize: 12, fontWeight: '600' },
   modeTextSelected: { color: Colors.primaryDark, fontWeight: '700' },
+  guideBox: { borderRadius: 13, borderWidth: 1, borderColor: '#dbeaf3', backgroundColor: '#f4f9fc', padding: 12, gap: 5 },
+  guideTitle: { color: Colors.primaryDark, fontSize: 12, fontWeight: '800', marginBottom: 1 },
+  guideStep: { color: Colors.muted, fontSize: 10, lineHeight: 15 },
   title: { color: Colors.ink, fontSize: 24, fontWeight: '800', marginTop: 1 },
   subtitle: { color: Colors.muted, fontSize: 12, lineHeight: 17, marginTop: -8 },
   field: { gap: 6 },
