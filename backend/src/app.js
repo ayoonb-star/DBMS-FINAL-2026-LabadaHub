@@ -1,47 +1,47 @@
-require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const db = require('./config/db');
+const {
+  corsOrigins,
+  publicApiBaseUrl,
+} = require('./config/env');
+const {
+  API_VERSION_PREFIX,
+  AUTH_ROUTE_PREFIX,
+} = require('./routes/admin-application-paths');
+const authRoutes = require('./routes/auth');
+const healthRoutes = require('./routes/health');
+const notFound = require('./middleware/not-found');
+const errorHandler = require('./middleware/error-handler');
 
 const app = express();
-app.use(cors());
-app.use(express.json());
+const allowedOrigins = new Set(corsOrigins);
 
-// Health check (no login needed)
-app.get('/api/health', async (req, res) => {
-  try {
-    await db.query('SELECT 1');
-    res.json({ status: 'ok', database: 'up' });
-  } catch (err) {
-    console.error('Health check failed:', err.message);
-    res.status(503).json({ status: 'error', database: 'down' });
+app.disable('x-powered-by');
+app.use(cors((req, callback) => {
+  const origin = req.get('Origin');
+  const apiOrigin = publicApiBaseUrl ? new URL(publicApiBaseUrl).origin : '';
+  const isAllowed = !origin ||
+    allowedOrigins.has(origin) ||
+    origin === apiOrigin;
+
+  if (!isAllowed) {
+    const error = new Error('Origin is not allowed by CORS.');
+    error.code = 'CORS_ORIGIN_DENIED';
+    error.status = 403;
+    return callback(error);
   }
-});
 
-app.use('/api/auth', require('./routes/auth'));
-app.use('/api/services', require('./routes/services'));
-app.use('/api/orders', require('./routes/orders'));
+  callback(null, {
+    origin: origin || false,
+    methods: ['GET', 'HEAD', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+  });
+}));
+app.use(express.json({ limit: '1mb' }));
 
-// Unknown routes
-app.use((req, res) => {
-  res.status(404).json({ message: 'Route not found' });
-});
+app.use(`${API_VERSION_PREFIX}${AUTH_ROUTE_PREFIX}`, authRoutes);
+app.use(API_VERSION_PREFIX, healthRoutes);
+app.use(notFound);
+app.use(errorHandler);
 
-// Global error handler (must be last, must have 4 parameters)
-app.use((err, req, res, next) => {
-  if (err.type === 'entity.parse.failed')
-    return res.status(400).json({ message: 'Invalid JSON in request body' });
-  console.error(err);
-  res.status(500).json({ message: 'Internal server error' });
-});
-
-// Keep the server alive if something slips through, but log it
-process.on('unhandledRejection', (reason) => {
-  console.error('Unhandled rejection:', reason);
-});
-process.on('uncaughtException', (err) => {
-  console.error('Uncaught exception:', err);
-});
-
-const port = process.env.PORT || 5000;
-app.listen(port, '0.0.0.0', () => console.log(`API running on port ${port}`));
+module.exports = app;

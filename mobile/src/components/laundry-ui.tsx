@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import type { PropsWithChildren, ReactNode } from 'react';
 import { Pressable, SafeAreaView, ScrollView, StyleSheet, Text, View } from 'react-native';
 import type { StyleProp, ViewStyle } from 'react-native';
@@ -37,6 +38,8 @@ export function AppScreen({ children }: PropsWithChildren) {
 
 function AccountBar() {
   const { user, signOut } = useAuth();
+  const [isSigningOut, setIsSigningOut] = useState(false);
+  const [signOutError, setSignOutError] = useState('');
   if (!user) {
     return null;
   }
@@ -49,13 +52,23 @@ function AccountBar() {
       </View>
       <Pressable
         accessibilityRole="button"
-        onPress={() => {
-          signOut();
-          router.replace('/');
+        disabled={isSigningOut}
+        onPress={async () => {
+          setSignOutError('');
+          setIsSigningOut(true);
+          try {
+            await signOut();
+            router.replace('/');
+          } catch {
+            setSignOutError('Could not clear the saved session. Please try again.');
+          } finally {
+            setIsSigningOut(false);
+          }
         }}
         style={styles.signOutButton}>
-        <Text style={styles.signOutText}>Sign out</Text>
+        <Text style={styles.signOutText}>{isSigningOut ? 'Signing out...' : 'Sign out'}</Text>
       </Pressable>
+      {signOutError ? <Text accessibilityRole="alert" style={styles.signOutError}>{signOutError}</Text> : null}
     </View>
   );
 }
@@ -178,6 +191,7 @@ const styles = StyleSheet.create({
   accountRole: { color: Colors.muted, fontSize: 9 },
   signOutButton: { backgroundColor: Colors.paleBlue, borderRadius: 9, paddingHorizontal: 10, paddingVertical: 7 },
   signOutText: { color: Colors.primaryDark, fontSize: 10, fontWeight: '700' },
+  signOutError: { color: Colors.red, fontSize: 10, flexBasis: '100%' },
   header: { gap: 5, paddingBottom: 2 },
   eyebrow: { color: Colors.primary, fontSize: 10, fontWeight: '800', letterSpacing: 1.1 },
   pageTitle: { color: Colors.ink, fontSize: 27, fontWeight: '800', letterSpacing: -0.5 },

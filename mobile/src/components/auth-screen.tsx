@@ -17,11 +17,15 @@ const ROLES: {
   { id: 'admin', label: 'Admin', loginLabel: 'Admin sign in', description: 'Manage your branch and team accounts.' },
 ];
 
-const DEMO_ADMIN_EMAIL = 'admin@freshstream.local';
-const DEMO_ADMIN_PASSWORD = 'LaundryAdmin26!';
-
 export function AuthScreen() {
-  const { signIn, signUp } = useAuth();
+  const {
+    authError,
+    requestAdminApplication,
+    resendAdminApplicationCode,
+    signIn,
+    signUp,
+    verifyAdminApplication,
+  } = useAuth();
   const [mode, setMode] = useState<'login' | 'signup'>('login');
   const [role, setRole] = useState<AccountRole | null>(null);
   const [name, setName] = useState('');
@@ -29,19 +33,32 @@ export function AuthScreen() {
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [inviteCode, setInviteCode] = useState('');
+  const [verificationCode, setVerificationCode] = useState('');
+  const [adminApplicationSubmitted, setAdminApplicationSubmitted] = useState(false);
   const [error, setError] = useState('');
+  const [status, setStatus] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const changeMode = (nextMode: 'login' | 'signup') => {
     setMode(nextMode);
     setError('');
+    setStatus('');
+    setAdminApplicationSubmitted(false);
+    setVerificationCode('');
   };
 
   const chooseRole = (nextRole: AccountRole) => {
     setRole(nextRole);
     setError('');
+    setStatus('');
+    setAdminApplicationSubmitted(false);
+    setVerificationCode('');
   };
 
-  const submit = () => {
+  const submit = async () => {
+    if (isSubmitting) {
+      return;
+    }
     setError('');
     if (!role) {
       setError('Choose an account type first.');
@@ -51,12 +68,13 @@ export function AuthScreen() {
       setError('Enter a valid email address.');
       return;
     }
-    if (!password) {
+    const isAdminApplication = mode === 'signup' && role === 'admin';
+    if ((!isAdminApplication || !adminApplicationSubmitted) && !password) {
       setError('Enter your password.');
       return;
     }
 
-    if (mode === 'signup') {
+    if (mode === 'signup' && (!isAdminApplication || !adminApplicationSubmitted)) {
       if (!name.trim()) {
         setError('Enter your name.');
         return;
@@ -69,23 +87,55 @@ export function AuthScreen() {
         setError('The passwords do not match.');
         return;
       }
-      const signupError = signUp({ name, email, password, role, inviteCode });
-      if (signupError) {
-        setError(signupError);
-      }
+    }
+    if (isAdminApplication && adminApplicationSubmitted && !verificationCode.trim()) {
+      setError('Enter the verification code sent after approval.');
       return;
     }
 
-    const signInError = signIn(email, password, role);
-    if (signInError) {
-      setError(signInError);
+    setIsSubmitting(true);
+    try {
+      const requestError = isAdminApplication
+        ? adminApplicationSubmitted
+          ? await verifyAdminApplication(email, verificationCode)
+          : await requestAdminApplication({ name, email, password })
+        : mode === 'signup'
+          ? await signUp({ name, email, password, role, inviteCode })
+          : await signIn(email, password, role);
+      if (requestError) {
+        setError(requestError);
+      } else if (isAdminApplication && !adminApplicationSubmitted) {
+        setAdminApplicationSubmitted(true);
+        setPassword('');
+        setConfirmPassword('');
+        setStatus('If eligible, your application has been sent for review. We will email you if it is approved.');
+      }
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Authentication failed. Please try again.');
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
-  const fillDemoAdmin = () => {
-    setEmail(DEMO_ADMIN_EMAIL);
-    setPassword(DEMO_ADMIN_PASSWORD);
+  const resendAdminCode = async () => {
+    if (isSubmitting) {
+      return;
+    }
     setError('');
+    setStatus('');
+    setIsSubmitting(true);
+    try {
+      const resendError = await resendAdminApplicationCode(email);
+      if (resendError) {
+        setError(resendError);
+      } else {
+        setStatus('If an approved application is eligible, a verification code will be sent.');
+      }
+    } catch (resendError) {
+      setError(resendError instanceof Error ? resendError.message : 'Could not request a verification code.');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const selectedRole = ROLES.find((item) => item.id === role);
@@ -119,10 +169,11 @@ export function AuthScreen() {
               <Text style={styles.guideStep}>
                 2. {mode === 'login'
                   ? 'Sign in with the email and password for that account.'
-                  : 'Create a Client account, or enter a valid invitation code for Staff or Admin.'}
+                  : 'Create a Client account, use a Staff invitation, or submit an Admin application for approval.'}
               </Text>
               <Text style={styles.guideStep}>3. Use the available tabs to book laundry, track orders, manage intake, or view store statistics.</Text>
             </View>
+            {authError ? <Text accessibilityRole="alert" style={styles.error}>{authError}</Text> : null}
 
             {showingPortalChoices ? (
               <>
@@ -130,7 +181,7 @@ export function AuthScreen() {
                 <Text style={styles.subtitle}>
                   {mode === 'login'
                     ? 'Client and admin accounts use separate sign-in forms.'
-                    : 'Client accounts are open. Staff and admin accounts need an invitation.'}
+                    : 'Client accounts are open. Staff use invitations; Admin applications require email approval.'}
                 </Text>
                 <View style={styles.portalList}>
                   {ROLES.map((item) => (
@@ -143,13 +194,8 @@ export function AuthScreen() {
                   ))}
                 </View>
                 {mode === 'signup' ? (
-                  <Text style={styles.portalNote}>An administrator can generate staff and admin invitations from the Admin screen.</Text>
-                ) : (
-                  <View style={styles.demoBox}>
-                    <Text style={styles.demoTitle}>Need to try the admin demo?</Text>
-                    <Text style={styles.demoDescription}>Open the Admin sign-in form and use its demo-account button.</Text>
-                  </View>
-                )}
+                  <Text style={styles.portalNote}>Staff invitations are managed in the Admin screen. Admin applications are reviewed by the authorized approver.</Text>
+                ) : null}
               </>
             ) : (
               <>
@@ -158,6 +204,9 @@ export function AuthScreen() {
                   onPress={() => {
                     setRole(null);
                     setError('');
+                    setStatus('');
+                    setAdminApplicationSubmitted(false);
+                    setVerificationCode('');
                   }}
                   style={styles.backButton}>
                   <Text style={styles.backText}>‹  {mode === 'login' ? 'Choose another sign-in portal' : 'Choose account type'}</Text>
@@ -171,10 +220,12 @@ export function AuthScreen() {
                     ? selectedRole?.description
                     : role === 'client'
                       ? 'Sign up to book laundry services and track your orders.'
-                      : 'Use the one-time invitation code provided by your administrator.'}
+                      : role === 'staff'
+                        ? 'Use the one-time Staff invitation code provided by your administrator.'
+                        : 'Submit your Admin application for email approval. If approved, a verification code will be emailed to you.'}
                 </Text>
 
-                {mode === 'signup' ? (
+                {mode === 'signup' && !adminApplicationSubmitted ? (
                   <FormField label="FULL NAME" value={name} onChangeText={setName} placeholder="Your name" autoComplete="name" />
                 ) : null}
                 <FormField
@@ -185,65 +236,97 @@ export function AuthScreen() {
                   keyboardType="email-address"
                   autoCapitalize="none"
                   autoComplete="email"
+                  editable={!adminApplicationSubmitted}
                 />
-                <FormField
-                  label="PASSWORD"
-                  value={password}
-                  onChangeText={setPassword}
-                  placeholder={mode === 'signup' ? 'At least 8 characters' : 'Enter your password'}
-                  secureTextEntry
-                  autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
-                />
-                {mode === 'signup' ? (
+                {(mode === 'login' || !adminApplicationSubmitted) ? (
                   <>
                     <FormField
-                      label="CONFIRM PASSWORD"
-                      value={confirmPassword}
-                      onChangeText={setConfirmPassword}
-                      placeholder="Re-enter your password"
+                      label="PASSWORD"
+                      value={password}
+                      onChangeText={setPassword}
+                      placeholder={mode === 'signup' ? 'At least 8 characters' : 'Enter your password'}
                       secureTextEntry
-                      autoComplete="new-password"
+                      autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
                     />
-                    {role !== 'client' ? (
+                    {mode === 'signup' ? (
+                      <FormField
+                        label="CONFIRM PASSWORD"
+                        value={confirmPassword}
+                        onChangeText={setConfirmPassword}
+                        placeholder="Re-enter your password"
+                        secureTextEntry
+                        autoComplete="new-password"
+                      />
+                    ) : null}
+                    {mode === 'signup' && role === 'staff' ? (
                       <FormField
                         label="INVITATION CODE"
                         value={inviteCode}
                         onChangeText={setInviteCode}
-                        placeholder={`Enter your ${role} invitation code`}
+                        placeholder="Enter your Staff invitation code"
                         autoCapitalize="characters"
                       />
                     ) : null}
                   </>
                 ) : null}
 
+                {mode === 'signup' && role === 'admin' && adminApplicationSubmitted ? (
+                  <>
+                    <Text style={styles.applicationStatus}>
+                      If your application is approved, enter the email verification code here. Codes expire after 15 minutes.
+                    </Text>
+                    <FormField
+                      label="EMAIL VERIFICATION CODE"
+                      value={verificationCode}
+                      onChangeText={setVerificationCode}
+                      placeholder="XXXX-XXXX-XXXX"
+                      autoCapitalize="characters"
+                      autoCorrect={false}
+                    />
+                    <Pressable
+                      accessibilityRole="button"
+                      disabled={isSubmitting}
+                      onPress={resendAdminCode}
+                      style={styles.resendButton}>
+                      <Text style={styles.resendText}>Resend verification code</Text>
+                    </Pressable>
+                  </>
+                ) : null}
+
                 {error ? <Text accessibilityRole="alert" style={styles.error}>{error}</Text> : null}
+                {status ? <Text accessibilityRole="status" style={styles.applicationStatus}>{status}</Text> : null}
 
                 <Pressable
                   accessibilityRole="button"
                   onPress={submit}
+                  disabled={isSubmitting}
+                  accessibilityState={{ disabled: isSubmitting, busy: isSubmitting }}
                   style={({ pressed }) => [styles.submitButton, pressed && styles.pressed]}>
-                  <Text style={styles.submitText}>{mode === 'login' ? `Sign in as ${selectedRole?.label}` : 'Create account'}</Text>
+                  <Text style={styles.submitText}>
+                    {isSubmitting
+                      ? mode === 'login'
+                        ? 'Signing in...'
+                        : role === 'admin'
+                          ? adminApplicationSubmitted ? 'Verifying code...' : 'Submitting application...'
+                          : 'Creating account...'
+                      : mode === 'login'
+                        ? `Sign in as ${selectedRole?.label}`
+                        : role === 'admin'
+                          ? adminApplicationSubmitted ? 'Verify and create Admin account' : 'Submit Admin application'
+                          : 'Create account'}
+                  </Text>
                 </Pressable>
 
-                {mode === 'login' && role === 'admin' ? (
-                  <View style={styles.demoBox}>
-                    <Text style={styles.demoTitle}>Try the admin demo</Text>
-                    <Text style={styles.demoDescription}>Sample account for testing staff invitations and store tools.</Text>
-                    <Pressable accessibilityRole="button" onPress={fillDemoAdmin} style={styles.demoButton}>
-                      <Text style={styles.demoButtonText}>Use demo admin account</Text>
-                    </Pressable>
-                  </View>
-                ) : null}
-                {mode === 'signup' && role !== 'client' ? (
+                {mode === 'signup' && role === 'staff' ? (
                   <View style={styles.inviteBox}>
                     <Text style={styles.inviteTitle}>Invitation required</Text>
-                    <Text style={styles.inviteDescription}>Staff and admin accounts are created by an administrator. Ask your store admin for a one-time invite code.</Text>
+                    <Text style={styles.inviteDescription}>Staff accounts are created with a one-time invitation code from an administrator.</Text>
                   </View>
                 ) : null}
               </>
             )}
 
-            <Text style={styles.disclaimer}>Demo only. Accounts are held in memory on this device; this is not production authentication.</Text>
+            <Text style={styles.disclaimer}>Your account is authenticated by the LabadaHub server. Booking and dashboard data remain sample data.</Text>
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -295,6 +378,8 @@ type FormFieldProps = {
   keyboardType?: 'email-address' | 'default';
   autoCapitalize?: 'none' | 'characters' | 'sentences';
   autoComplete?: 'name' | 'email' | 'new-password' | 'current-password';
+  autoCorrect?: boolean;
+  editable?: boolean;
 };
 
 function FormField({ label, ...inputProps }: FormFieldProps) {
@@ -331,6 +416,9 @@ const styles = StyleSheet.create({
   fieldLabel: { color: Colors.muted, fontSize: 9, fontWeight: '800', letterSpacing: 0.7 },
   input: { minHeight: 45, borderWidth: 1, borderColor: '#dce5ec', borderRadius: 11, paddingHorizontal: 12, paddingVertical: 10, color: Colors.ink, fontSize: 13, backgroundColor: '#ffffff' },
   error: { borderRadius: 10, backgroundColor: '#ffebe8', color: '#a83d35', paddingHorizontal: 11, paddingVertical: 9, fontSize: 11, lineHeight: 16 },
+  applicationStatus: { color: Colors.muted, fontSize: 12, lineHeight: 18 },
+  resendButton: { alignSelf: 'flex-start', paddingVertical: 6 },
+  resendText: { color: Colors.primaryDark, fontSize: 12, fontWeight: '700' },
   submitButton: { minHeight: 48, borderRadius: 13, backgroundColor: Colors.primaryDark, alignItems: 'center', justifyContent: 'center', marginTop: 2 },
   submitText: { color: '#ffffff', fontSize: 14, fontWeight: '700' },
   pressed: { opacity: 0.78 },
@@ -343,11 +431,6 @@ const styles = StyleSheet.create({
   portalNote: { color: Colors.muted, fontSize: 10, lineHeight: 15 },
   backButton: { alignSelf: 'flex-start', paddingVertical: 2, marginBottom: -3 },
   backText: { color: Colors.primary, fontSize: 11, fontWeight: '700' },
-  demoBox: { borderRadius: 13, borderWidth: 1, borderColor: '#dbeaf3', backgroundColor: '#f4f9fc', padding: 12, gap: 6 },
-  demoTitle: { color: Colors.ink, fontSize: 12, fontWeight: '700' },
-  demoDescription: { color: Colors.muted, fontSize: 10, lineHeight: 15 },
-  demoButton: { alignSelf: 'flex-start', paddingVertical: 5 },
-  demoButtonText: { color: Colors.primary, fontSize: 11, fontWeight: '700' },
   inviteBox: { borderRadius: 13, backgroundColor: '#fff7e7', padding: 12, gap: 5 },
   inviteTitle: { color: '#80500c', fontSize: 12, fontWeight: '700' },
   inviteDescription: { color: '#80500c', fontSize: 10, lineHeight: 15 },

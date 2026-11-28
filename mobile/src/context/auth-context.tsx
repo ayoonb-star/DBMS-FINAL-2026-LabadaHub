@@ -1,100 +1,196 @@
-import { createContext, useContext, useMemo, useState } from 'react';
+import { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import type { PropsWithChildren } from 'react';
 
-export type AccountRole = 'client' | 'staff' | 'admin';
+import {
+  createStaffInvite as createStaffInviteRequest,
+  getCurrentUser,
+  login,
+  requestAdminApplication as requestAdminApplicationRequest,
+  resendAdminApplicationCode as resendAdminApplicationCodeRequest,
+  register,
+  verifyAdminApplication as verifyAdminApplicationRequest,
+} from '@/services/auth-api';
+import {
+  getApiErrorMessage,
+  isUnauthorizedApiError,
+} from '@/services/api-client';
+import {
+  clearStoredAuthToken,
+  getStoredAuthToken,
+  storeAuthToken,
+} from '../services/auth-token-storage';
+import type { AccountRole, AccountUser, StaffInvite } from '@/types/auth';
 
-export type AccountUser = {
-  name: string;
-  email: string;
-  role: AccountRole;
-};
-
-type Account = AccountUser & { password: string };
-type Invite = { code: string; role: Exclude<AccountRole, 'client'> };
+export type { AccountRole, AccountUser } from '@/types/auth';
 
 type AuthContextValue = {
   user: AccountUser | null;
-  invites: Invite[];
-  signIn: (email: string, password: string, role: AccountRole) => string | null;
+  invites: StaffInvite[];
+  isRestoringSession: boolean;
+  authError: string | null;
+  signIn: (email: string, password: string, role: AccountRole) => Promise<string | null>;
   signUp: (details: {
     name: string;
     email: string;
     password: string;
     role: AccountRole;
     inviteCode: string;
-  }) => string | null;
-  createInvite: (role: Exclude<AccountRole, 'client'>) => string;
-  signOut: () => void;
-};
-
-const DEMO_ADMIN: Account = {
-  name: 'LabadaHub Admin',
-  email: 'admin@freshstream.local',
-  password: 'LaundryAdmin26!',
-  role: 'admin',
+  }) => Promise<string | null>;
+  requestAdminApplication: (details: {
+    name: string;
+    email: string;
+    password: string;
+  }) => Promise<string | null>;
+  verifyAdminApplication: (email: string, verificationCode: string) => Promise<string | null>;
+  resendAdminApplicationCode: (email: string) => Promise<string | null>;
+  createStaffInvite: () => Promise<string>;
+  signOut: () => Promise<void>;
 };
 
 const AuthContext = createContext<AuthContextValue | null>(null);
-let localAccounts: Account[] = [DEMO_ADMIN];
-let localInvites: Invite[] = [];
-let currentUser: AccountUser | null = null;
 
 export function AuthProvider({ children }: PropsWithChildren) {
-  const [invites, setInvites] = useState(localInvites);
-  const [user, setUser] = useState<AccountUser | null>(currentUser);
+  const [invites, setInvites] = useState<StaffInvite[]>([]);
+  const [user, setUser] = useState<AccountUser | null>(null);
+  const [token, setToken] = useState<string | null>(null);
+  const [isRestoringSession, setIsRestoringSession] = useState(true);
+  const [authError, setAuthError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+
+    async function restoreSession() {
+      try {
+        const storedToken = await getStoredAuthToken();
+        if (!active || !storedToken) {
+          return;
+        }
+
+        setToken(storedToken);
+        try {
+          const currentUser = await getCurrentUser(storedToken);
+          if (active) {
+            setUser(currentUser);
+          }
+        } catch (error) {
+          if (isUnauthorizedApiError(error)) {
+            await clearStoredAuthToken();
+            if (active) {
+              setToken(null);
+              setAuthError('Your session expired. Please sign in again.');
+            }
+          } else if (active) {
+            setAuthError(getApiErrorMessage(error));
+          }
+        }
+      } catch (error) {
+        if (active) {
+          setAuthError(getApiErrorMessage(error));
+        }
+      } finally {
+        if (active) {
+          setIsRestoringSession(false);
+        }
+      }
+    }
+
+    void restoreSession();
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const value = useMemo<AuthContextValue>(
     () => ({
       user,
       invites,
-      signIn: (email, password, role) => {
-        const account = localAccounts.find(
-          (item) =>
-            item.email.toLowerCase() === email.trim().toLowerCase() &&
-            item.password === password &&
-            item.role === role,
-        );
-        if (!account) {
-          return 'We could not find a matching account for that role. Check your details or sign up.';
+      isRestoringSession,
+      authError,
+      signIn: async (email, password, role) => {
+        setAuthError(null);
+        try {
+          const result = await login(email.trim(), password, role);
+          await storeAuthToken(result.token);
+          setToken(result.token);
+          setUser(result.user);
+          return null;
+        } catch (error) {
+          return getApiErrorMessage(error);
         }
-        currentUser = { name: account.name, email: account.email, role: account.role };
-        setUser(currentUser);
-        return null;
       },
-      signUp: ({ name, email, password, role, inviteCode }) => {
-        const normalizedEmail = email.trim().toLowerCase();
-        if (localAccounts.some((account) => account.email.toLowerCase() === normalizedEmail)) {
-          return 'An account already uses this email. Try signing in instead.';
+      signUp: async (details) => {
+        setAuthError(null);
+        try {
+          const result = await register({
+            ...details,
+            name: details.name.trim(),
+            email: details.email.trim(),
+          });
+          await storeAuthToken(result.token);
+          setToken(result.token);
+          setUser(result.user);
+          if (details.inviteCode.trim()) {
+            const redeemedCode = details.inviteCode.trim().toUpperCase();
+            setInvites((current) =>
+              current.filter((invite) => invite.code !== redeemedCode),
+            );
+          }
+          return null;
+        } catch (error) {
+          return getApiErrorMessage(error);
         }
-        const invite = role === 'client'
-          ? null
-          : localInvites.find((item) => item.code === inviteCode.trim().toUpperCase() && item.role === role);
-        if (role !== 'client' && !invite) {
-          return 'Enter a valid invitation code for this account type.';
+      },
+      requestAdminApplication: async (details) => {
+        setAuthError(null);
+        try {
+          await requestAdminApplicationRequest({
+            ...details,
+            name: details.name.trim(),
+            email: details.email.trim(),
+          });
+          return null;
+        } catch (error) {
+          return getApiErrorMessage(error);
+        }
+      },
+      verifyAdminApplication: async (email, verificationCode) => {
+        setAuthError(null);
+        try {
+          const result = await verifyAdminApplicationRequest(email.trim(), verificationCode);
+          await storeAuthToken(result.token);
+          setToken(result.token);
+          setUser(result.user);
+          return null;
+        } catch (error) {
+          return getApiErrorMessage(error);
+        }
+      },
+      resendAdminApplicationCode: async (email) => {
+        setAuthError(null);
+        try {
+          await resendAdminApplicationCodeRequest(email.trim());
+          return null;
+        } catch (error) {
+          return getApiErrorMessage(error);
+        }
+      },
+      createStaffInvite: async () => {
+        if (!token) {
+          throw new Error('Sign in as an administrator to create invitations.');
         }
 
-        const account: Account = { name: name.trim(), email: normalizedEmail, password, role };
-        localAccounts = [...localAccounts, account];
-        if (invite) {
-          localInvites = localInvites.filter((item) => item.code !== invite.code);
-          setInvites(localInvites);
-        }
-        currentUser = { name: account.name, email: account.email, role: account.role };
-        setUser(currentUser);
-        return null;
-      },
-      createInvite: (role) => {
-        const code = `${role === 'admin' ? 'ADMIN' : 'STAFF'}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
-        localInvites = [...localInvites, { code, role }];
-        setInvites(localInvites);
+        const code = await createStaffInviteRequest(token);
+        setInvites((current) => [...current, { code, role: 'staff' }]);
         return code;
       },
-      signOut: () => {
-        currentUser = null;
+      signOut: async () => {
+        await clearStoredAuthToken();
+        setToken(null);
         setUser(null);
+        setAuthError(null);
       },
     }),
-    [invites, user],
+    [authError, invites, isRestoringSession, token, user],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

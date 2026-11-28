@@ -4,7 +4,6 @@ import { StyleSheet, Text, View } from 'react-native';
 
 import { ActionButton, AppScreen, Card, Colors, Metric, PageHeader, Pill, Row, SectionTitle } from '@/components/laundry-ui';
 import { useAuth } from '@/context/auth-context';
-import type { AccountRole } from '@/context/auth-context';
 
 const INITIAL_SLOTS = [
   { time: '8:00 AM - 10:00 AM', used: 6, capacity: 6 },
@@ -26,11 +25,12 @@ const RECENT_ACTIVITY = [
 ];
 
 export default function AdminScreen() {
-  const { user, invites, createInvite } = useAuth();
+  const { user, invites, createStaffInvite } = useAuth();
   const [slots, setSlots] = useState(INITIAL_SLOTS);
   const [expanded, setExpanded] = useState(false);
-  const [inviteRole, setInviteRole] = useState<Exclude<AccountRole, 'client'>>('staff');
   const [newInvite, setNewInvite] = useState('');
+  const [staffInviteError, setStaffInviteError] = useState('');
+  const [isGeneratingInvite, setIsGeneratingInvite] = useState(false);
 
   if (user && user.role !== 'admin') {
     return <Redirect href="/staff" />;
@@ -40,8 +40,20 @@ export default function AdminScreen() {
     setExpanded(true);
   };
 
-  const generateInvite = () => {
-    setNewInvite(createInvite(inviteRole));
+  const generateStaffInvite = async () => {
+    if (isGeneratingInvite) {
+      return;
+    }
+    setStaffInviteError('');
+    setNewInvite('');
+    setIsGeneratingInvite(true);
+    try {
+      setNewInvite(await createStaffInvite());
+    } catch (error) {
+      setStaffInviteError(error instanceof Error ? error.message : 'Could not create the Staff invitation.');
+    } finally {
+      setIsGeneratingInvite(false);
+    }
   };
 
   return (
@@ -140,25 +152,17 @@ export default function AdminScreen() {
       </Card>
 
       <Card>
-        <SectionTitle title="Staff & admin invites" detail="Generate one-time registration codes for store accounts." />
-        <View style={styles.inviteRoles}>
-          {(['staff', 'admin'] as const).map((role) => {
-            const selected = inviteRole === role;
-            return (
-              <Text
-                key={role}
-                accessibilityRole="button"
-                onPress={() => setInviteRole(role)}
-                style={[styles.inviteRole, selected && styles.inviteRoleSelected]}>
-                {role === 'staff' ? 'Staff account' : 'Admin account'}
-              </Text>
-            );
-          })}
-        </View>
-        <ActionButton onPress={generateInvite}>Generate {inviteRole} invite</ActionButton>
+        <SectionTitle title="Admin applications" detail="Admin applicants are reviewed by the authorized approval mailbox and must verify their email before account creation." />
+      </Card>
+
+      <Card>
+        <SectionTitle title="Staff invitations" detail="Generate a one-time registration code for a Staff account." />
+        <ActionButton onPress={generateStaffInvite} disabled={isGeneratingInvite}>
+          {isGeneratingInvite ? 'Creating invitation...' : 'Generate Staff invite'}
+        </ActionButton>
         {newInvite ? (
           <View style={styles.newInvite}>
-            <Text style={styles.inviteHelp}>Share this one-time code with the new {inviteRole}:</Text>
+            <Text style={styles.inviteHelp}>Share this one-time Staff code with the invited person:</Text>
             <Text selectable style={styles.inviteCode}>{newInvite}</Text>
           </View>
         ) : null}
@@ -173,7 +177,8 @@ export default function AdminScreen() {
             ))}
           </View>
         ) : null}
-        <Text style={styles.inviteDisclaimer}>Prototype only: invite codes are local to this running app and are not secure authentication tokens.</Text>
+        {staffInviteError ? <Text accessibilityRole="alert" style={styles.inviteError}>{staffInviteError}</Text> : null}
+        <Text style={styles.inviteDisclaimer}>Staff invitations retain the existing code-based workflow.</Text>
       </Card>
 
       <Text style={styles.sampleNote}>Dashboard figures and activity are sample data and are not connected to a live store database.</Text>
@@ -216,9 +221,6 @@ const styles = StyleSheet.create({
   activityTime: { color: Colors.muted, fontSize: 10 },
   activityDescription: { color: Colors.muted, fontSize: 10, lineHeight: 15 },
   sampleNote: { color: Colors.muted, textAlign: 'center', fontSize: 10, lineHeight: 15, paddingHorizontal: 10 },
-  inviteRoles: { flexDirection: 'row', gap: 8 },
-  inviteRole: { flex: 1, overflow: 'hidden', textAlign: 'center', color: Colors.muted, fontSize: 10, fontWeight: '600', borderWidth: 1, borderColor: Colors.border, borderRadius: 10, paddingHorizontal: 7, paddingVertical: 11 },
-  inviteRoleSelected: { color: Colors.primaryDark, borderColor: Colors.primary, backgroundColor: Colors.paleBlue, fontWeight: '700' },
   newInvite: { alignItems: 'center', gap: 5, backgroundColor: '#f0f8fc', borderRadius: 12, padding: 12 },
   inviteHelp: { color: Colors.muted, fontSize: 10, lineHeight: 15 },
   inviteCode: { color: Colors.primaryDark, fontSize: 20, fontWeight: '800', letterSpacing: 1.1 },
@@ -226,4 +228,5 @@ const styles = StyleSheet.create({
   inviteLine: { justifyContent: 'space-between' },
   inviteCodeSmall: { color: Colors.ink, fontSize: 11, fontWeight: '700' },
   inviteDisclaimer: { color: Colors.muted, fontSize: 9, lineHeight: 14 },
+  inviteError: { color: Colors.red, fontSize: 10, lineHeight: 15 },
 });

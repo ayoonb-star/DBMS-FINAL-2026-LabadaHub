@@ -1,15 +1,7 @@
 require('dotenv').config();
-const bcrypt = require('bcrypt');
 const db = require('./config/db');
 
 (async () => {
-  const hash = await bcrypt.hash('Password123', 10);
-
-  await db.query(
-    `INSERT IGNORE INTO users (full_name, email, password_hash, role) VALUES
-     ('Shop Admin', 'admin@laundry.com', ?, 'admin'),
-     ('Shop Staff', 'staff@laundry.com', ?, 'staff')`, [hash, hash]);
-
   await db.query(
     `INSERT INTO services (name, pricing_type, price) VALUES
      ('Wash-Dry-Fold', 'per_kilo', 60),
@@ -26,6 +18,6 @@ const db = require('./config/db');
         [date, s, e]);
     }
   }
-  console.log('Seed done. Admin/staff password: Password123');
+  console.log('Seed done. No user accounts were created.');
   process.exit();
 })();

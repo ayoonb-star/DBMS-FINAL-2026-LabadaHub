@@ -1,0 +1,8 @@
+{
+  "devDependencies": {
+    "supabase": "^3.4.0"
+  },
+  "dependencies": {
+    "express-rate-limit": "^8.7.5"
+  }
+}
